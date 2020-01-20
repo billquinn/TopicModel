@@ -1,0 +1,183 @@
+---
+title: "MJP_GenreAnalysis_Topics+Cosine"
+output: html_document
+---
+
+This codes explores they way topic modeling can help focus questions about literary history.
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(zoo)
+library(lsa)
+library(cleanNLP)
+
+library(ggsci)
+library(extrafont)
+extrafont::loadfonts(device = 'pdf')
+
+library(stringi)
+library(stringr)
+
+
+# The palette with black:
+cbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# Hypothesis for high similarity values:
+# Magazines could have very high topic-similarity because magazines are most distinct by their subjects.
+```
+
+
+# Reading and Prep
+```{r}
+data = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/Topic_Models/Data_TopicModels/data-cleaned_7-15-2019")
+data$year = data$year %>% as.integer()
+
+data$type= data$type %>% as.character %>% 
+  gsub("leters","letters",.)
+
+# Topics
+topics = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/Topic_Models/Data_TopicModels/100_topics_data_7-15-2019") %>%
+  ungroup()
+
+#topics15 = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/Topic_Models/Data_TopicModels/15_topics_data") %>% ungroup()
+
+#topics = topics15
+#rm(topics15)
+
+colnames(topics) = c("id", "topic", "proportion")
+topics$id = topics$id %>% as.integer()
+
+topics = topics %>% 
+  inner_join(data %>% select(-text)) %>%
+  # filter(magazine == magazineSelected) %>% 
+  filter(type %in% c("articles", "letters", "poetry", "fiction", "advertisements"))
+```
+
+# Cosine Similarities (Taste Mimicry)
+```{r}
+# 2a: Average each type's topic per year
+
+#groupAVG = topics %>% group_by(year, type, topic) %>% 
+#  summarize(average = mean(proportion)) %>% 
+#  spread(topic, average)
+
+# 2b: Topics weighted by document length (word_count * topic_distributions)
+
+# Issue w/ averaging over-estimates the shortest articles and over estimates the longest articles // use weighted average (topic prevalence weighted by document length) by topic length;
+# I.E. == Topic lengths multiplied by topic proportions of each documents (make sure document lengths are stopword removed as well)
+
+groupWeighted = data %>%
+  select(id, text) %>%
+  # Stopwords already removed before topic modeling in TopicModels_MJP.Rmd; Suppose, mallet removes additional words, but negligible
+  group_by(id) %>%
+  unnest_tokens(word, text) %>%
+  count(word) %>%
+  summarize(wordCount = sum(n)) %>% 
+  inner_join(topics) %>%
+  mutate(weight = .$wordCount * .$proportion) %>%
+  group_by(year, magazine, type, topic) %>%
+  summarize(average = mean(weight)) %>% 
+  spread(topic, average)
+
+# 3: Measure each type/year's cosine similarity to each other type/year
+meta = groupWeighted[,1:3]
+
+#sims = groupWeighted[, 3:17] %>% 
+sims = groupWeighted[, 4:103] %>% 
+  as.matrix() %>% 
+  t() %>% 
+  cosine() %>% 
+  as.data.frame()
+
+colnames(sims) = rownames(sims)
+
+sims = sims %>% 
+  mutate(type=meta$type %>% as.character,
+         magazine=meta$magazine %>% as.character,
+         year=meta$year %>% as.integer,
+         id = rownames(.) %>% as.integer) %>% 
+  gather(compDoc, similarity, 1:(ncol(.)-4))
+
+comps_meta = meta
+colnames(comps_meta) = c("compYear", "compMag", "compType")
+comps_meta$compType = comps_meta$compType %>% as.character
+comps_meta$compYear = comps_meta$compYear %>% as.integer
+comps_meta$compMag = comps_meta$compMag %>% as.character
+
+comps_meta = rowid_to_column(comps_meta, "compDoc")
+comps_meta$compDoc = comps_meta$compDoc %>% as.character
+sims = sims %>% inner_join(comps_meta)
+
+taste = sims %>%
+  filter(magazine == compMag, year == compYear) %>%
+  group_by(year, magazine, type, compType) %>%
+  summarize(mean = mean(similarity))
+```
+
+
+# Visualizations of Topics within Genres Over Time
+```{r}
+selectedMag = "The Crisis"
+
+figure1_data = taste %>% 
+  filter(magazine == selectedMag,
+         type == "fiction",
+         compType %in% c("articles", "letters", "poetry", "fiction"),
+         year >= 1910 & year <= 1917)
+
+write.csv(figure1_data, 
+          "/Users/williamquinn/Documents/Articles/AmericanLiterature/Readerly-Revisions_2019/Images/figure1_data.csv")
+
+figure2_data_letters = taste %>% 
+  filter(magazine == selectedMag,
+         type %in% c("letters"),
+         compType %in% c("articles", "letters", "poetry", "fiction"),
+         year >= 1910 & year <= 1917)
+
+write.csv(figure2_data_letters,
+          "/Users/williamquinn/Documents/Articles/AmericanLiterature/Readerly-Revisions_2019/Images/figure2_data-articles.csv")
+
+
+p = ggplot(taste %>% 
+  filter(magazine == selectedMag,
+         type == "fiction",
+         # type %in% c("letters", "articles"),
+         compType %in% c("articles", "letters", "poetry", "fiction"),
+         year >= 1910 & year <= 1917), 
+       aes(x=year, y=mean, colour=compType, group=compType)) + 
+  geom_point(size = 3, aes(shape = compType)) +
+  geom_line() + 
+  # geom_smooth() +
+  scale_color_grey(start = 0, end = 0,
+                   name = "Genre Index") +
+  # Set open Circle as lightest gray.
+  scale_shape_discrete(name = "Genre Index", solid = F) +
+  # scale_fill_manual(values=cbPalette, 
+  #                   aesthetics = "colour",
+  #                   name = "Genre Index") +
+  facet_wrap(~type) +
+  labs(#title = paste0("", selectedMag, sep = " "),
+       x = "Year",
+       y = "Similarity") +
+  theme_bw() + 
+  theme(axis.title = element_text(size = 12),
+        axis.text.x = element_text(family = "Times New Roman", size = 12,angle = 90, hjust = 1),
+        axis.text.y = element_text(family = "Times New Roman", size = 12),
+        legend.text=element_text(family = "Times New Roman", size=12)) #,
+        # legend.position="none")
+  # ggplot2::annotate(geom = "text", x = 1918, y = .7, label = "The Blank Issue", hjust="left") +
+  # ggplot2::annotate(
+  #   geom = "curve", x = 1917.7, y = .71, xend = 1916, yend = .9,
+  #   curvature = -.3, arrow = arrow(length = unit(2, "mm")))
+
+p
+
+ggsave(p, 
+       filename = paste("/Users/williamquinn/Documents/Articles/AmericanLiterature/Readerly-Revisions_2019/Images/",
+                        "Figure2_bw_source", 
+                        sep = ""),
+       dpi = 600,
+       device = png)
+```

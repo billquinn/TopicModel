@@ -1,0 +1,291 @@
+---
+title: "MJP_TopicModel"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tm)
+library(mallet)
+library(lsa)
+library(data.table)
+library(zoo)
+library(scatterplot3d)
+library(plotly)
+```
+
+# Reading and Cleaning
+Should I keep whitespace? (I did this in early attempts and TLR's moment is the Blank Issue)
+```{r}
+catalog_path = "/Users/williamquinn/Desktop/DH/Python/MJP/Output/catalog_file_7-15-2019.txt"
+text_path = "/Users/williamquinn/Desktop/DH/Python/MJP/Output/text_file_7-15-2019.txt"
+mods_path = "/Users/williamquinn/Desktop/DH/Python/MJP/Output/mods_file_7-15-2019.txt"
+clean_path = "/Users/williamquinn/Desktop/DH/Python/MJP/Output/clean_mjp.txt"
+cleanNS_path = "/Users/williamquinn/Desktop/DH/Python/MJP/Output/cleanNoStopwords_mjp.txt"
+  
+catalog = read.table(catalog_path, sep="\t", header=T, stringsAsFactors = FALSE)
+catalog$mjp_id = catalog$mjp_id %>% as.character()
+
+text = read.table(text_path, sep="\t", header=T, quote="", comment.char="", stringsAsFactors = FALSE)
+text$mjp_id = text$mjp_id %>% as.character()
+
+mods = read.table(mods_path, sep="\t", header=T, stringsAsFactors = FALSE)
+mods$mjp_id = mods$mjp_id %>% as.character()
+
+catalog$magazine= catalog$magazine %>% as.character %>%
+  gsub("The Masses.*","The Masses",.) %>%
+  gsub("The Seven Arts .*","The Seven Arts",.) %>%
+  gsub("The Freewoman.*","The Freewoman",.) %>%
+  gsub("Others[t]","Others",.) %>%
+  gsub("The Liitle Review","The Little Review",.)
+
+catalog$type= catalog$type %>% as.character %>% 
+  gsub("artciles","articles",.) %>%
+  gsub("ariticles","articles",.) %>%
+  gsub("articlews","articles",.) %>%
+  gsub("arrticles","articles",.) %>%
+  gsub("ad","advertisements",.) %>%
+  gsub("adevrtisement.*","advertisements",.) %>%
+  gsub("arvertisement.*","advertisements",.) %>%
+  gsub("adveristement.*","advertisements",.) %>%
+  gsub("advertisment.*","advertisements",.) %>%
+  gsub("advertisements.*","advertisements",.) %>%
+  gsub("poems","poetry",.) %>%      
+  gsub("[Ff]ic[tion].*","fiction",.) %>%
+  gsub("im.*","images",.) %>%
+  gsub("fro.*", "front",.) %>%
+  gsub("con.*", "content",.)
+
+text$text= text$text %>% as.character %>% tolower() %>%
+  gsub("pgbrk"," ",.) %>%
+  gsub('[[:punct:] ]+', ' ',.) %>% gsub('[[:digit:]]+', ' ',.) 
+  # %>% gsub("\\s"," ",.)
+
+data = catalog %>% inner_join(mods) %>% inner_join(text)
+
+data$year = data$date %>% gsub("(\\d{4}).*","\\1",.) 
+#data$date = lubridate::ymd(data$year)
+data$date = data$date %>% gsub("(.*)", "\\1-01",.) %>% as.Date("%Y-%m-%d")
+
+# Ignoring corpus clean up for now (in order to emphasize corpus variation).
+
+corpus = Corpus(VectorSource(as.character(data$text)))
+#corpus = tm_map(corpus, stripWhitespace)                          Retaining whitespace.
+#corpus = tm_map(corpus, removeWords, stopwords("english"))      #  Retaining stopwords.
+corpus_dataframe = data.frame(text = sapply(corpus, as.character), stringsAsFactors = FALSE)
+
+# Rename "Text" column for removal later; New Corpus column name is "Text," too.
+colnames(data)[7] <- "text_rm"
+data = data[ , -which(names(data) %in% c("text_rm"))]
+
+# Join data & corpus_dataframe
+data = cbind(data, corpus_dataframe)
+data = data %>% select(id, mjp_id, magazine, type, date, year, text)
+
+#write.table(text$text, file = clean_path, sep = "\n", row.names = FALSE)
+#write.table(corpus_dataframe$Text, file = cleanNS_path, sep = "\n", row.names = FALSE)
+
+# Retaining miscellaneous content.
+
+#removed_content = data %>% filter(type==c("content","front","image","miscellaneous"))
+
+data = data %>% 
+  filter(type!="front") %>%
+  filter(type!="back") %>%
+  filter(type!="images") %>%
+  filter(type!="content") %>%
+  filter(type!="miscellaneous") %>%
+  filter(type!="issue")
+  
+#data$date = data$date %>% as.numeric()
+data = data %>% group_by(magazine, mjp_id) %>% arrange(date) %>% ungroup()
+
+issues = data %>% 
+  group_by(mjp_id, magazine, date) %>% 
+  summarise(text = paste(text, collapse=" ")) %>% 
+  arrange(date)
+
+issues$date = issues$date %>% gsub("(.*)","\\1-01",.) %>% as.Date(format="%Y-%m-%d")
+
+magsYear = data %>%
+  group_by(magazine, year) %>%
+  summarize(text = paste(text, collapse=" ")) %>%
+  unique()
+
+# Combine Marsden Magazines
+data$magazine[data$magazine %in% 
+                c("The Freewoman", "The New Freewoman", "The Egoist")] <- "Marsden Magazines"
+issues$magazine[issues$magazine %in% 
+                  c("The Freewoman", "The New Freewoman", "The Egoist")] <- "Marsden Magazines"
+magsYear$magazine[magsYear$magazine %in% 
+                    c("The Freewoman", "The New Freewoman", "The Egoist")] <- "Marsden Magazines"
+
+# Append Row IDs for Issues and magsYear
+issues$id <- seq_len(nrow(issues))
+issues$id = issues$id %>% as.character()
+
+magsYear$id <- seq_len(nrow(magsYear))
+magsYear$id = magsYear$id %>% as.character()
+
+saveRDS(data, "/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/Topic_Models/Data_TopicModels/data-cleaned_7-15-2019")
+rm(catalog, text, mods, catalog_path, clean_path, text_path, mods_path, cleanNS_path, corpus, corpus_dataframe)
+```
+
+# Topic Model
+
+# Topic Modeling (data): Creating ||| set to 100 topics
+```{r}
+#options(java.parameters = "-Xmx1000m")
+
+topics = data %>% ungroup() %>% select(text, id)
+topics$id = topics$id %>% as.character()
+names(topics) = c("Text","ID")
+
+
+n.topics=100
+input= topics 
+
+
+mallet.instances <- mallet.import(as.character(input$ID), 
+                                  as.character(input$Text), 
+                                  stoplist.file="../data/stopwords.txt",
+                                  token.regexp = "\\w+", preserve.case=F)
+
+topic.model <- MalletLDA(num.topics=n.topics)
+topic.model$loadDocuments(mallet.instances)
+
+#Look at the word frequencies sorted in order.
+vocabulary <- topic.model$getVocabulary()
+word.freqs <- mallet.word.freqs(topic.model)
+
+#Some preferences. Inside baseball: see Wallach and Mimno for what's going on.
+topic.model$setAlphaOptimization(20, 50)
+topic.model$train(300)
+#Increase the fit without changing the topic distribution; optional
+topic.model$maximize(10)
+
+#Gets a list of the documents and topics
+doc.topics <- mallet.doc.topics(topic.model, smoothed=T, normalized=T)
+#Changes the orientation of that matrix to be horizontal:
+topic.docs <- t(doc.topics)
+
+#Gets a list of the top words.
+topic.words <- mallet.topic.words(topic.model, smoothed=T, normalized=T)
+
+
+#Assign some labels to the topics
+topics.labels <- rep("", n.topics)
+for (topic in 1:n.topics) {
+  topics.labels[topic] <- paste(
+    mallet.top.words(topic.model, topic.words[topic,], num.top.words=15)$words, collapse=" "
+)}
+
+#to look at the labels, type "topics.labels"
+
+rownames(doc.topics) = input$ID
+colnames(doc.topics) = topics.labels
+
+#We use the gather function from tidyr to convert from a matrix into a data frame: -document lets us gather in all the topic labels.
+
+#allcounts = (doc.topics) %>% as.data.frame
+allcounts = doc.topics %>% as.data.frame
+allcounts$document = rownames(allcounts)
+topicCounts = allcounts %>% gather(topic, proportion, -document)
+
+rm(allcounts, input, word.freqs, topic.words,
+   doc.topics, vocabulary, mallet.instances,
+   n.topics, topic, topic.model,
+   topic.docs, topics)
+
+saveRDS(topicCounts, "/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/Topic_Models/Data_TopicModels/100_topics_data_7-15-2019")
+```
+
+# Read in post-cleaning
+```{r}
+#saveRDS(data, "/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/topic_models/data-cleaned")
+#saveRDS(issues, "/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/topic_models/issues-cleaned")
+#saveRDS(magsYear, "/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/topic_models/magsYear-cleaned")
+
+data = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/Topic_Models/Data_TopicModels/data-cleaned_7-15-2019")
+#issues = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/topic_models/issues-cleaned")
+#magsYear = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/topic_models/mags_topicsAveraged")
+
+meta = data %>% select(-text)
+
+topicCounts = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/Topic_Models/Data_TopicModels/100_topics_data")
+
+colnames(topicCounts) = c("id", "topic", "proportion")
+topicCounts$id = topicCounts$id %>% as.integer
+```
+
+
+# PCA (data)
+```{r}
+topicCounts = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/topic_models/100_topics_data")
+
+colnames(topicCounts)[1] = "id"
+topicMatrix = spread(topicCounts, key = topic, value = proportion) %>% 
+  select(-id)
+
+#topicSlice = topicCounts %>% group_by(id) %>% arrange(-proportion) %>% slice(1)
+#topicMatrix = topicSlice %>% group_by(id) %>% spread(topic, proportion)
+#topicMatrix = topicMatrix[,2:101]
+#topicMatrix[is.na(topicMatrix)] <- 0
+
+model = prcomp(topicMatrix)
+
+names(model)
+
+#We can see what the weights are by 
+model$rotation %>% as.data.frame %>% 
+  mutate(word=rownames(model$rotation)) %>% 
+  select(word,PC1) %>% arrange(-PC1) %>% head
+
+model$rotation %>% as.data.frame %>% 
+  mutate(word=rownames(model$rotation)) %>% 
+  select(word,PC1) %>% arrange(PC1) %>% head
+
+# The second "Principal Component"
+model$rotation %>% as.data.frame %>% 
+  mutate(word=rownames(model$rotation)) %>% 
+  select(word,PC2) %>% arrange(-PC2) %>% head
+
+model$rotation %>% as.data.frame %>% 
+  mutate(word=rownames(model$rotation)) %>% 
+  select(word,PC2) %>% arrange(PC2) %>% head
+
+#Predict
+
+prediction = predict(model)
+
+prediction = prediction %>% as.data.frame %>% 
+  mutate(Type=data$type %>% as.character, 
+         Year=data$year %>% as.integer, 
+         Magazine=data$magazine %>% as.character,
+         Document=data$id %>% as.integer) %>% 
+  select(Type, Magazine, Year, Document, PC1, PC2, PC3)
+
+rm(model)
+```
+
+
+# Visualize Topic Model (data)
+```{r}
+old_prediction = readRDS("/Users/williamquinn/Desktop/DH/R/Modernist Magazine Work/topic_models/topic_models_pca")
+
+plotly_plot = plot_ly(old_prediction, x= ~PC1, y= ~PC2, z= ~PC3,
+                      color= ~Magazine, colors = rainbow(11, alpha=.5),
+                      hoverinfo = "text",
+                      text = ~paste("</br> ID: ", Document,
+                                    #"</br> Date:", Date,
+                                    "</br> Year: ", Year,
+                                    "</br> Type: ", Type,
+                                    "</br> Magazine: ", Magazine)) %>%
+  add_markers() %>%
+  layout(scene = list(xaxis= list(title="Principal Component One"),
+                      yaxis= list(title="Principal Component Two"),
+                      zaxis= list(title="Principal Component Three"))) 
+
+ggplotly(plotly_plot)
+```
